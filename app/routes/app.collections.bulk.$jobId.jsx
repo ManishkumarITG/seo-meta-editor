@@ -31,15 +31,15 @@ export const loader = async ({ request, params }) => {
   // Opportunistic stale-job recovery so a stuck "processing" job doesn't
   // hang the progress UI forever after a server restart.
   try {
-    await recoverStaleJobsForShop(session.shop, { resourceType: "product" });
+    await recoverStaleJobsForShop(session.shop, { resourceType: "collection" });
   } catch (err) {
-    console.warn("[app.bulk.$jobId] stale recovery failed:", err);
+    console.warn("[app.collections.bulk.$jobId] stale recovery failed:", err);
   }
 
   const job = await findJobWithRowsForShop({
     jobId,
     shop: session.shop,
-    resourceType: "product",
+    resourceType: "collection",
   });
 
   if (!job) {
@@ -224,7 +224,7 @@ export default function BulkJobPage() {
 
   return (
     <Page
-      backAction={{ content: "Bulk update", url: "/app/bulk" }}
+      backAction={{ content: "Bulk update", url: "/app/collections/bulk" }}
       title={`Job ${job.id.slice(-8)} — ${job.fileName}`}
       titleMetadata={jobStatusBadge(job.status)}
       primaryAction={
@@ -453,7 +453,7 @@ export default function BulkJobPage() {
         </Layout>
 
         <InlineStack align="end">
-          <Button url="/app/bulk">Back to dashboard</Button>
+          <Button url="/app/collections/bulk">Back to dashboard</Button>
         </InlineStack>
       </BlockStack>
     </Page>
@@ -466,7 +466,7 @@ export function ErrorBoundary() {
     isRouteErrorResponse(error) && error.status === 404;
   return (
     <Page
-      backAction={{ content: "Bulk update", url: "/app/bulk" }}
+      backAction={{ content: "Bulk update", url: "/app/collections/bulk" }}
       title={is404 ? "Job not found" : "Job error"}
     >
       <Banner tone="critical" title={is404 ? "Job not found" : "Something went wrong"}>

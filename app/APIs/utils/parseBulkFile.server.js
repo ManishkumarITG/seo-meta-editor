@@ -1,14 +1,19 @@
 import * as XLSX from "xlsx";
 import {
-  ProductInputError,
-  parseProductInput,
-} from "./parseProductUrl.js";
-import { SEO_DESCRIPTION_MAX, SEO_TITLE_MAX } from "./seoValidation.js";
+  SEO_DESCRIPTION_MAX,
+  SEO_TITLE_MAX,
+} from "../../utils/seoValidation.js";
+import { getResourceAdapter } from "../services/resourceAdapter.server.js";
 
 export const MAX_BULK_ROWS = 1000;
 export const MAX_BULK_FILE_BYTES = 5 * 1024 * 1024;
+// Hard ceiling on cell count to defuse zip-bomb / shared-string DoS attempts.
+// 1000 rows × 30 columns is well above any legitimate input.
+const MAX_CELLS = 30_000;
+// Strings that look like Excel scientific-notation truncation of a numeric ID.
+// Excel auto-converts numbers > 15 digits, silently corrupting Shopify product IDs.
+const SCIENTIFIC_NOTATION = /^[+-]?\d+(?:\.\d+)?[eE][+-]?\d+$/;
 
-const URL_KEYS = ["product_url", "product url", "url", "producturl"];
 const TITLE_KEYS = [
   "meta_title",
   "meta title",
@@ -50,21 +55,29 @@ function pickField(row, candidates) {
   return "";
 }
 
-function validateRow({ rowNumber, productUrl, metaTitle, metaDescription }) {
+function validateRow(
+  { rowNumber, productUrl, metaTitle, metaDescription },
+  adapter,
+) {
   const messages = [];
   let level = "valid";
 
   if (!productUrl) {
-    messages.push("Missing product URL.");
+    messages.push(`Missing ${adapter.label} URL.`);
+    level = "error";
+  } else if (SCIENTIFIC_NOTATION.test(productUrl)) {
+    messages.push(
+      `Excel converted this ${adapter.label} ID to scientific notation. Format the ${adapter.primaryUrlColumnHeader} column as Text in your spreadsheet and re-export.`,
+    );
     level = "error";
   } else {
     try {
-      parseProductInput(productUrl);
+      adapter.parseInput(productUrl);
     } catch (err) {
       messages.push(
-        err instanceof ProductInputError
+        err instanceof adapter.InputError
           ? err.message
-          : "Could not parse product URL.",
+          : `Could not parse ${adapter.label} URL.`,
       );
       level = "error";
     }
@@ -93,7 +106,13 @@ function validateRow({ rowNumber, productUrl, metaTitle, metaDescription }) {
   return { rowNumber, productUrl, metaTitle, metaDescription, validation: { level, messages } };
 }
 
-export function parseBulkBuffer(buffer, { fileName } = {}) {
+export function parseBulkBuffer(
+  buffer,
+  { fileName, resourceType = "product" } = {},
+) {
+  const adapter = getResourceAdapter(resourceType);
+  const URL_KEYS = adapter.urlColumnKeys;
+
   if (buffer.byteLength > MAX_BULK_FILE_BYTES) {
     throw new BulkFileError(
       `File is too large (${(buffer.byteLength / 1024 / 1024).toFixed(2)} MB). Maximum allowed is 5 MB.`,
@@ -102,7 +121,19 @@ export function parseBulkBuffer(buffer, { fileName } = {}) {
 
   let workbook;
   try {
-    workbook = XLSX.read(buffer, { type: "buffer" });
+    workbook = XLSX.read(buffer, {
+      type: "buffer",
+      // Skip work we don't need — saves CPU/memory and shrinks the DoS surface.
+      cellFormula: false,
+      cellHTML: false,
+      cellStyles: false,
+      cellNF: false,
+      cellDates: false,
+      bookFiles: false,
+      bookProps: false,
+      bookSheets: false,
+      bookVBA: false,
+    });
   } catch (err) {
     throw new BulkFileError(
       `Could not read file${fileName ? ` "${fileName}"` : ""}: ${err.message}`,
@@ -114,6 +145,26 @@ export function parseBulkBuffer(buffer, { fileName } = {}) {
     throw new BulkFileError("Workbook has no sheets.");
   }
   const sheet = workbook.Sheets[firstSheetName];
+
+  // Reject sheets whose declared range is absurdly large before we materialize
+  // the cells — protects against crafted xlsx files with sparse but huge !ref.
+  const ref = sheet["!ref"];
+  if (ref) {
+    try {
+      const range = XLSX.utils.decode_range(ref);
+      const cols = range.e.c - range.s.c + 1;
+      const rows = range.e.r - range.s.r + 1;
+      if (cols * rows > MAX_CELLS) {
+        throw new BulkFileError(
+          `Sheet has ${rows.toLocaleString()} rows × ${cols} columns — too large to process. Trim the sheet to its data range and re-upload.`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof BulkFileError) throw err;
+      // decode_range failure: fall through and let sheet_to_json error normally.
+    }
+  }
+
   const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
 
   if (rawRows.length === 0) {
@@ -130,7 +181,7 @@ export function parseBulkBuffer(buffer, { fileName } = {}) {
 
   if (!hasUrl || (!hasTitle && !hasDescription)) {
     throw new BulkFileError(
-      "Required columns not found. Expected at least product_url and one of meta_title / meta_description (case-insensitive).",
+      `Required columns not found. Expected at least ${adapter.primaryUrlColumnHeader} and one of meta_title / meta_description (case-insensitive).`,
     );
   }
 
@@ -141,12 +192,15 @@ export function parseBulkBuffer(buffer, { fileName } = {}) {
   }
 
   const rows = rawRows.map((row, idx) =>
-    validateRow({
-      rowNumber: idx + 2, // +1 for 1-based, +1 for header row
-      productUrl: pickField(row, URL_KEYS),
-      metaTitle: pickField(row, TITLE_KEYS),
-      metaDescription: pickField(row, DESCRIPTION_KEYS),
-    }),
+    validateRow(
+      {
+        rowNumber: idx + 2, // +1 for 1-based, +1 for header row
+        productUrl: pickField(row, URL_KEYS),
+        metaTitle: pickField(row, TITLE_KEYS),
+        metaDescription: pickField(row, DESCRIPTION_KEYS),
+      },
+      adapter,
+    ),
   );
 
   const duplicates = findDuplicateUrls(rows);
@@ -155,14 +209,14 @@ export function parseBulkBuffer(buffer, { fileName } = {}) {
       if (duplicates.has(row.productUrl) && row.validation.level === "valid") {
         row.validation.level = "warning";
         row.validation.messages.push(
-          "Duplicate product URL — last occurrence wins.",
+          `Duplicate ${adapter.label} URL — last occurrence wins.`,
         );
       } else if (
         duplicates.has(row.productUrl) &&
         !row.validation.messages.some((m) => m.startsWith("Duplicate"))
       ) {
         row.validation.messages.push(
-          "Duplicate product URL — last occurrence wins.",
+          `Duplicate ${adapter.label} URL — last occurrence wins.`,
         );
       }
     }

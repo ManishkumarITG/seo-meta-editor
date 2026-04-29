@@ -36,8 +36,9 @@ model Session {
 model EditHistory {
   id             Int      @id @default(autoincrement())
   shop           String
-  productId      String
-  productTitle   String
+  resourceType   String   @default("product") // "product" | "collection"
+  productId      String   // generic resource GID; column name is legacy
+  productTitle   String   // generic resource title; column name is legacy
   oldTitle       String?
   newTitle       String?
   oldDescription String?
@@ -45,21 +46,24 @@ model EditHistory {
   editedAt       DateTime @default(now())
 
   @@index([shop, editedAt])
+  @@index([shop, resourceType, editedAt])
 }
 
 model BulkJob {
-  id          String       @id @default(cuid())
-  shop        String
-  fileName    String
-  totalRows   Int
-  successRows Int          @default(0)
-  failedRows  Int          @default(0)
-  status      String       @default("pending")
-  createdAt   DateTime     @default(now())
-  completedAt DateTime?
-  rows        BulkJobRow[]
+  id           String       @id @default(cuid())
+  shop         String
+  resourceType String       @default("product") // "product" | "collection"
+  fileName     String
+  totalRows    Int
+  successRows  Int          @default(0)
+  failedRows   Int          @default(0)
+  status       String       @default("pending")
+  createdAt    DateTime     @default(now())
+  completedAt  DateTime?
+  rows         BulkJobRow[]
 
   @@index([shop, createdAt])
+  @@index([shop, resourceType, createdAt])
 }
 
 model BulkJobRow {

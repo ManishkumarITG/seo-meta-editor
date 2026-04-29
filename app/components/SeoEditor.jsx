@@ -31,7 +31,7 @@ function fieldErrorsFromUserErrors(errors) {
   return map;
 }
 
-export function SeoEditor({ product, saving, userErrors, onSave }) {
+export function SeoEditor({ product, saving, userErrors, onSave, adminUrl }) {
   const [title, setTitle] = useState(product.seo.title ?? "");
   const [description, setDescription] = useState(
     product.seo.description ?? "",
@@ -146,10 +146,13 @@ export function SeoEditor({ product, saving, userErrors, onSave }) {
               Save changes
             </Button>
             <Button
-              url={`shopify:admin/products/${product.id.replace(
-                "gid://shopify/Product/",
-                "",
-              )}`}
+              url={
+                adminUrl ??
+                `shopify:admin/products/${product.id.replace(
+                  "gid://shopify/Product/",
+                  "",
+                )}`
+              }
               target="_blank"
               variant="plain"
             >

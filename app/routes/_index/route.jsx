@@ -1,7 +1,7 @@
 import { redirect } from "@remix-run/node";
 import { Form, useLoaderData } from "@remix-run/react";
 
-import { login } from "../../shopify.server";
+import { login } from "../../APIs/shopify.server.js";
 
 import styles from "./styles.module.css";
 

@@ -1,13 +1,33 @@
-import { authenticate } from "../shopify.server";
-import prisma from "../db.server.js";
+import { authenticate } from "../APIs/shopify.server.js";
+import { createJobWithRows } from "../APIs/models/bulkJob.server.js";
 import {
   BulkFileError,
+  MAX_BULK_FILE_BYTES,
   parseBulkBuffer,
-} from "../utils/parseBulkFile.server.js";
-import { processBulkJob } from "../services/bulkProcessor.server.js";
+} from "../APIs/utils/parseBulkFile.server.js";
+import { processBulkJob } from "../APIs/services/bulkProcessor.server.js";
+import { normalizeResourceType } from "../APIs/services/resourceAdapter.server.js";
+
+const MAX_FILENAME_LENGTH = 200;
+
+function truncateFileName(name) {
+  if (!name) return "upload";
+  if (name.length <= MAX_FILENAME_LENGTH) return name;
+  return `${name.slice(0, MAX_FILENAME_LENGTH - 1)}…`;
+}
 
 export const action = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
+
+  // Reject oversized bodies before buffering to memory.
+  const contentLength = Number(request.headers.get("content-length") ?? 0);
+  if (contentLength > 0 && contentLength > MAX_BULK_FILE_BYTES * 1.1) {
+    // 10 % grace for multipart envelope overhead.
+    return {
+      phase: "error",
+      message: `Upload too large (${(contentLength / 1024 / 1024).toFixed(2)} MB). Max ${(MAX_BULK_FILE_BYTES / 1024 / 1024).toFixed(0)} MB.`,
+    };
+  }
 
   let formData;
   try {
@@ -24,7 +44,8 @@ export const action = async ({ request }) => {
     return { phase: "error", message: "No file received." };
   }
 
-  const fileName = file.name || "upload";
+  const resourceType = normalizeResourceType(formData.get("resourceType"));
+  const fileName = truncateFileName(file.name || "upload");
   let buffer;
   try {
     buffer = Buffer.from(await file.arrayBuffer());
@@ -37,7 +58,7 @@ export const action = async ({ request }) => {
 
   let parsed;
   try {
-    parsed = parseBulkBuffer(buffer, { fileName });
+    parsed = parseBulkBuffer(buffer, { fileName, resourceType });
   } catch (err) {
     if (err instanceof BulkFileError) {
       return { phase: "error", message: err.message };
@@ -65,23 +86,11 @@ export const action = async ({ request }) => {
     };
   }
 
-  const job = await prisma.$transaction(async (tx) => {
-    return tx.bulkJob.create({
-      data: {
-        shop: session.shop,
-        fileName,
-        totalRows: parsed.rows.length,
-        status: "pending",
-        rows: {
-          create: parsed.rows.map((r) => ({
-            rowNumber: r.rowNumber,
-            productUrl: r.productUrl,
-            metaTitle: r.metaTitle,
-            metaDescription: r.metaDescription,
-          })),
-        },
-      },
-    });
+  const job = await createJobWithRows({
+    shop: session.shop,
+    resourceType,
+    fileName,
+    rows: parsed.rows,
   });
 
   setImmediate(() => {
