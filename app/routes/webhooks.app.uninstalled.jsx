@@ -1,5 +1,4 @@
-import { authenticate } from "../APIs/shopify.server.js";
-import db from "../APIs/db.server.js";
+import { authenticate, sessionStorage } from "../APIs/shopify.server.js";
 
 export const action = async ({ request }) => {
   const { shop, session, topic } = await authenticate.webhook(request);
@@ -9,7 +8,10 @@ export const action = async ({ request }) => {
   // Webhook requests can trigger multiple times and after an app has already been uninstalled.
   // If this webhook already ran, the session may have been deleted previously.
   if (session) {
-    await db.session.deleteMany({ where: { shop } });
+    const sessions = await sessionStorage.findSessionsByShop(shop);
+    if (sessions.length > 0) {
+      await sessionStorage.deleteSessions(sessions.map((s) => s.id));
+    }
   }
 
   return new Response();

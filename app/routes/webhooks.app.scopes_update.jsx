@@ -1,5 +1,4 @@
-import { authenticate } from "../APIs/shopify.server.js";
-import db from "../APIs/db.server.js";
+import { authenticate, sessionStorage } from "../APIs/shopify.server.js";
 
 export const action = async ({ request }) => {
   const { payload, session, topic, shop } = await authenticate.webhook(request);
@@ -7,14 +6,11 @@ export const action = async ({ request }) => {
 
   const current = payload.current;
   if (session) {
-    await db.session.update({
-      where: {
-        id: session.id,
-      },
-      data: {
-        scope: current.toString(),
-      },
-    });
+    const stored = await sessionStorage.loadSession(session.id);
+    if (stored) {
+      stored.scope = current.toString();
+      await sessionStorage.storeSession(stored);
+    }
   }
   return new Response();
 };

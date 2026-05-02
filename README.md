@@ -36,7 +36,7 @@ Built on the official `@shopify/shopify-app-template-remix` template.
 - TypeScript (strict)
 - Polaris 12 + App Bridge React 4
 - Shopify Admin GraphQL API `2025-01`
-- Prisma (SQLite for dev) for sessions + edit history
+- MongoDB via Mongoose ODM (sessions, edit history, bulk job state)
 
 ## Requirements
 
@@ -55,7 +55,8 @@ These are normally written automatically by `shopify app dev` into `.env`. You s
 | `SHOPIFY_APP_URL`    | yes      | Public URL of the running app (Cloudflare tunnel in dev)   |
 | `SCOPES`             | yes      | Set automatically from `shopify.app.toml` (`read_products,write_products`) |
 | `SHOP_CUSTOM_DOMAIN` | no       | Set if your dev store uses a non-`myshopify.com` domain    |
-| `DATABASE_URL`       | no       | Override Prisma datasource (defaults to `file:dev.sqlite`) |
+| `MONGODB_URI`        | yes      | MongoDB connection string (default `mongodb://localhost:27017/`) |
+| `MONGODB_DATABASE`   | yes      | MongoDB database name (default `seo_meta_editor`)          |
 
 ## Local Development
 
@@ -64,10 +65,7 @@ These are normally written automatically by `shopify app dev` into `.env`. You s
    npm install
    ```
 
-2. Run Prisma migrations to create / sync the SQLite database:
-   ```bash
-   npm run setup
-   ```
+2. Make sure MongoDB is running locally and reachable at the URI in `.env` (default `mongodb://localhost:27017/`). Mongoose creates the database + collections + indexes on first model use, so there's no separate migration step.
 
 3. Start the dev server. The first run prompts you to log into Shopify Partners, pick (or create) an app, and select a development store:
    ```bash
@@ -89,12 +87,9 @@ These are normally written automatically by `shopify app dev` into `.env`. You s
 | -------------------------- | ----------------------------------------------------------- |
 | `npm run dev`              | `shopify app dev` — runs the embedded app locally           |
 | `npm run build`            | Production Remix build                                      |
-| `npm run typecheck`        | `tsc --noEmit` — strict TypeScript check                    |
 | `npm run lint`             | ESLint                                                      |
-| `npm run setup`            | `prisma generate && prisma migrate deploy`                  |
 | `npm run deploy`           | `shopify app deploy` — deploys app config to Shopify        |
-| `npx prisma migrate dev`   | Create + apply a new local migration                        |
-| `npx prisma studio`        | Inspect the local SQLite DB (sessions, edit history)        |
+| `mongosh $MONGODB_URI/$MONGODB_DATABASE` | Inspect the local MongoDB database               |
 
 ## Deploy to Shopify Partners
 
@@ -105,8 +100,7 @@ The Shopify CLI manages app configuration and hosting integration. A typical dep
    npm run deploy
    ```
 2. Host the app somewhere reachable (Vercel, Fly, Render, Cloudflare Workers, your own VPS). Point `SHOPIFY_APP_URL` at the public URL and update the `application_url` and `redirect_urls` in `shopify.app.toml` (or let `shopify app deploy` write them) before re-deploying.
-3. Use a managed Postgres or another supported Prisma datasource in production rather than the dev SQLite file. Update `prisma/schema.prisma`'s `datasource` block accordingly and provide `DATABASE_URL`.
-4. Run `npm run setup` (`prisma migrate deploy`) on the host as part of the start-up command (`docker-start` does this automatically in the included `Dockerfile`).
+3. Point `MONGODB_URI` at a managed MongoDB cluster (Atlas, etc.) and set `MONGODB_DATABASE` to your production database name. Mongoose creates indexes on first model use — no separate migration step.
 
 See the official Shopify docs for hosting recipes:
 - https://shopify.dev/docs/apps/deployment/web
@@ -141,11 +135,10 @@ app/
     seoValidation.js                  # counter helpers
     timeAgo.js                        # relative time formatter
     __tests__/                        # node:test specs
-  db.server.js                        # Prisma client
-  shopify.server.js                   # Shopify app config
-prisma/
-  schema.prisma                       # Session + EditHistory + BulkJob + BulkJobRow models
-  migrations/                         # SQL migrations
+  db.server.js                        # Mongoose connection singleton
+  shopify.server.js                   # Shopify app config (with MongoDBSessionStorage)
+  models/
+    schemas.server.js                 # Mongoose schemas: BulkJob, BulkJobRow, EditHistory
 shopify.app.toml                      # Shopify app config (scopes, webhooks, URLs)
 ```
 
@@ -156,14 +149,14 @@ shopify.app.toml                      # Shopify app config (scopes, webhooks, UR
 | Suite | Run |
 | --- | --- |
 | URL parser | `node --test app/utils/__tests__/parseProductUrl.test.js` |
-| Bulk file parser (xlsx + csv) | `node --test app/utils/__tests__/parseBulkFile.test.js` |
-| Bulk processor (3-row scenarios, hits SQLite) | `node --test app/services/__tests__/bulkProcessor.test.js` |
+| Bulk file parser (xlsx + csv) | `node --test app/APIs/utils/__tests__/parseBulkFile.test.js` |
+| Bulk processor (3-row scenarios, hits MongoDB) | `node --test app/APIs/services/__tests__/bulkProcessor.test.js` |
 
-The processor test creates and tears down test rows under the shop name `test-bulk-processor.myshopify.com` in the dev SQLite DB, so it is safe to run alongside real data.
+The processor test connects to MongoDB on `MONGODB_URI` (default `mongodb://localhost:27017/`) using the `MONGODB_DATABASE` value (default `seo_meta_editor_test` for the test) and tears down test rows under the shop name `test-bulk-processor.myshopify.com`. If MongoDB is unreachable the suite skips silently.
 
 ## Troubleshooting
 
 - **"App name cannot contain Shopify"** when re-scaffolding — pick a different app name.
 - **Scope changes don't take effect** — after editing `shopify.app.toml`, the dev session prompts to reauthorize. Accept it. In prod, push with `npm run deploy`.
-- **Type error on `PrismaSessionStorage`** — make sure `@shopify/shopify-app-session-storage-prisma` is `^9.0.0` (matches `@shopify/shopify-api@13.x` from `@shopify/shopify-app-remix@4.1.x`).
+- **MongoDB connection refused** — the dev server logs `[db.server] MongoDB connection failed` on startup if it can't reach `MONGODB_URI`. Start MongoDB locally (`brew services start mongodb-community`, `sudo systemctl start mongod`, etc.) and restart `npm run dev`.
 - **"Could not load product" with a custom domain** — set the `SHOP_CUSTOM_DOMAIN` env var to that domain so embedded auth resolves.

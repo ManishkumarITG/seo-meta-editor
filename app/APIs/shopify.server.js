@@ -4,8 +4,19 @@ import {
   AppDistribution,
   shopifyApp,
 } from "@shopify/shopify-app-remix/server";
-import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
-import prisma from "./db.server.js";
+import { MongoDBSessionStorage } from "@shopify/shopify-app-session-storage-mongodb";
+import "./db.server.js";
+
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/";
+const MONGODB_DATABASE = process.env.MONGODB_DATABASE || "seo_meta_editor";
+
+// MongoDBSessionStorage opens its own connection separate from Mongoose.
+// That's intentional — the storage adapter manages its own collection
+// (`shopify_sessions`) and connection lifecycle.
+const sessionStorageInstance = new MongoDBSessionStorage(
+  new URL(MONGODB_URI),
+  MONGODB_DATABASE,
+);
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
@@ -14,7 +25,7 @@ const shopify = shopifyApp({
   scopes: process.env.SCOPES?.split(","),
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
-  sessionStorage: new PrismaSessionStorage(prisma),
+  sessionStorage: sessionStorageInstance,
   distribution: AppDistribution.AppStore,
   future: {
     unstable_newEmbeddedAuthStrategy: true,
